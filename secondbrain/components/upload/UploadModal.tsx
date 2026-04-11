@@ -4,17 +4,24 @@ import { useEffect, useRef, useState } from "react";
 
 type UploadAttachmentType = "image" | "audio" | "file";
 
-type UploadAttachment = {
+export type UploadModalAttachment = {
   type: UploadAttachmentType;
   file: File;
   name: string;
+};
+
+type UploadAttachment = UploadModalAttachment & {
+  id: string;
+  progress: number;
+  isUploading: boolean;
+  previewUrl?: string;
 };
 
 export type UploadModalItem = {
   id: string;
   type: "capture";
   content: string;
-  attachments: UploadAttachment[];
+  attachments: UploadModalAttachment[];
 };
 
 type UploadModalProps = {
@@ -27,26 +34,98 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
   const [attachments, setAttachments] = useState<UploadAttachment[]>([]);
   const [error, setError] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const uploadTimersRef = useRef<Record<string, number>>({});
+  const attachmentsRef = useRef<UploadAttachment[]>([]);
+  const discardRecordingRef = useRef(false);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     return () => {
+      discardRecordingRef.current = true;
       mediaRecorderRef.current?.stop();
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      Object.values(uploadTimersRef.current).forEach((timer) => window.clearInterval(timer));
+      attachmentsRef.current.forEach((attachment) => {
+        if (attachment.previewUrl) {
+          URL.revokeObjectURL(attachment.previewUrl);
+        }
+      });
     };
   }, []);
 
-  const upsertAttachment = (type: UploadAttachmentType, file: File) => {
-    setAttachments((current) => {
-      const next = current.filter((attachment) => attachment.type !== type);
+  useEffect(() => {
+    if (!isRecording) {
+      return;
+    }
 
-      return [...next, { type, file, name: file.name }];
-    });
+    const timer = window.setInterval(() => {
+      setRecordingSeconds((current) => current + 1);
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isRecording]);
+
+  const addAttachment = (type: UploadAttachmentType, file: File) => {
+    const attachmentId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const previewUrl = type === "image" ? URL.createObjectURL(file) : undefined;
+
+    setAttachments((current) => [
+      ...current,
+      {
+        id: attachmentId,
+        type,
+        file,
+        name: file.name,
+        progress: 0,
+        isUploading: true,
+        previewUrl,
+      },
+    ]);
+
+    uploadTimersRef.current[attachmentId] = window.setInterval(() => {
+      setAttachments((current) => {
+        let completed = false;
+
+        const next = current.map((attachment) => {
+          if (attachment.id !== attachmentId) {
+            return attachment;
+          }
+
+          const nextProgress = Math.min(attachment.progress + 18, 100);
+          completed = nextProgress >= 100;
+
+          return {
+            ...attachment,
+            progress: nextProgress,
+            isUploading: nextProgress < 100,
+          };
+        });
+
+        if (completed) {
+          const timer = uploadTimersRef.current[attachmentId];
+
+          if (timer) {
+            window.clearInterval(timer);
+            delete uploadTimersRef.current[attachmentId];
+          }
+        }
+
+        return next;
+      });
+    }, 220);
+
     setError("");
   };
 
@@ -54,13 +133,15 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
     type: Extract<UploadAttachmentType, "image" | "file">,
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
-    const selectedFile = event.target.files?.[0];
+    const selectedFiles = Array.from(event.target.files ?? []);
 
-    if (!selectedFile) {
+    if (selectedFiles.length === 0) {
       return;
     }
 
-    upsertAttachment(type, selectedFile);
+    selectedFiles.forEach((selectedFile) => {
+      addAttachment(type, selectedFile);
+    });
     event.target.value = "";
   };
 
@@ -75,6 +156,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
     }
 
     try {
+      discardRecordingRef.current = false;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
 
@@ -89,6 +171,14 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
       });
 
       recorder.addEventListener("stop", () => {
+        if (discardRecordingRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+          mediaRecorderRef.current = null;
+          setIsRecording(false);
+          return;
+        }
+
         const audioBlob = new Blob(audioChunksRef.current, {
           type: recorder.mimeType || "audio/webm",
         });
@@ -96,7 +186,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
           type: audioBlob.type || "audio/webm",
         });
 
-        upsertAttachment("audio", audioFile);
+        addAttachment("audio", audioFile);
         stream.getTracks().forEach((track) => track.stop());
         mediaStreamRef.current = null;
         mediaRecorderRef.current = null;
@@ -105,6 +195,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
 
       recorder.start();
       setIsRecording(true);
+      setRecordingSeconds(0);
       setError("");
     } catch {
       setError("Microphone access was denied.");
@@ -118,6 +209,11 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
       return;
     }
 
+    if (attachments.some((attachment) => attachment.isUploading)) {
+      setError("Wait for uploads to finish before saving.");
+      return;
+    }
+
     if (!content.trim() && attachments.length === 0) {
       setError("Add text or attach something before saving.");
       return;
@@ -128,23 +224,37 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
       id: `capture-${Date.now()}`,
       type: "capture",
       content: content.trim(),
-      attachments,
+      attachments: attachments.map(({ type, file, name }) => ({ type, file, name })),
     });
     onClose();
   };
 
   const handleCancel = () => {
     if (isRecording) {
+      discardRecordingRef.current = true;
       stopRecording();
     }
 
     onClose();
   };
 
-  const removeAttachment = (type: UploadAttachmentType) => {
-    setAttachments((current) =>
-      current.filter((attachment) => attachment.type !== type),
-    );
+  const removeAttachment = (attachmentId: string) => {
+    const timer = uploadTimersRef.current[attachmentId];
+
+    if (timer) {
+      window.clearInterval(timer);
+      delete uploadTimersRef.current[attachmentId];
+    }
+
+    setAttachments((current) => {
+      const attachment = current.find((item) => item.id === attachmentId);
+
+      if (attachment?.previewUrl) {
+        URL.revokeObjectURL(attachment.previewUrl);
+      }
+
+      return current.filter((item) => item.id !== attachmentId);
+    });
   };
 
   return (
@@ -171,7 +281,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
             type="button"
             onClick={handleSubmit}
             className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
-            disabled={isRecording}
+            disabled={isRecording || attachments.some((attachment) => attachment.isUploading)}
           >
             Save
           </button>
@@ -180,25 +290,86 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
 
       <main className="flex-1 overflow-y-auto px-6 py-8 sm:px-10 md:px-14">
         <div className="mx-auto flex h-full w-full max-w-4xl flex-col">
-          <textarea
-            autoFocus
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder=""
-            className="min-h-[55vh] w-full flex-1 resize-none border-0 bg-transparent text-lg leading-8 text-slate-900 outline-none placeholder:text-slate-300"
-          />
+          {isRecording ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-5 py-10 text-center">
+              <p className="text-4xl font-semibold tracking-[-0.04em] text-slate-950">
+                {formatRecordingTime(recordingSeconds)}
+              </p>
+              <div className="flex items-end gap-1.5">
+                {[6, 14, 20, 10, 17, 8, 16, 22, 12].map((height, index) => (
+                  <span
+                    key={`${height}-${index}`}
+                    className="w-1 rounded-full bg-slate-500/55"
+                    style={{ height }}
+                  />
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={stopRecording}
+                className="mt-2 flex h-14 w-14 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50"
+                aria-label="Stop recording"
+              >
+                <AudioIcon recording={true} />
+              </button>
+              <p className="text-sm text-slate-400">tap to stop</p>
+            </div>
+          ) : (
+            <textarea
+              autoFocus
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder=""
+              className="min-h-[55vh] w-full flex-1 resize-none border-0 bg-transparent text-lg leading-8 text-slate-900 outline-none placeholder:text-slate-300"
+            />
+          )}
 
           {attachments.length > 0 ? (
-            <div className="mt-6 flex flex-wrap gap-3">
+            <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {attachments.map((attachment) => (
-                <button
-                  key={attachment.type}
-                  type="button"
-                  onClick={() => removeAttachment(attachment.type)}
-                  className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50"
+                <div
+                  key={attachment.id}
+                  className="relative overflow-hidden rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
                 >
-                  {attachment.type}: {attachment.name}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(attachment.id)}
+                    className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200 hover:text-slate-900"
+                    aria-label={`Remove ${attachment.name}`}
+                  >
+                    <span className="text-sm leading-none">x</span>
+                  </button>
+
+                  {attachment.type === "image" && attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt={attachment.name}
+                      className="mb-4 h-28 w-full rounded-2xl object-cover"
+                    />
+                  ) : (
+                    <div className="mb-4 flex h-28 items-center justify-center rounded-2xl bg-slate-100 text-sm font-medium text-slate-500">
+                      {attachment.type.toUpperCase()}
+                    </div>
+                  )}
+
+                  <div className="pr-10">
+                    <p className="truncate text-sm font-medium text-slate-900">{attachment.name}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {attachment.isUploading ? "Uploading..." : "Uploaded"}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className="h-full rounded-full bg-slate-900 transition-[width] duration-200"
+                      style={{ width: `${attachment.progress}%` }}
+                    />
+                  </div>
+
+                  <p className="mt-2 text-right text-xs text-slate-500">
+                    {attachment.progress}%
+                  </p>
+                </div>
               ))}
             </div>
           ) : null}
@@ -243,6 +414,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
           type="file"
           accept="image/*"
           className="hidden"
+          multiple
           onChange={(event) => handleFileSelection("image", event)}
         />
         <input
@@ -254,6 +426,13 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
       </footer>
     </div>
   );
+}
+
+function formatRecordingTime(totalSeconds: number) {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
 function FooterIconButton({

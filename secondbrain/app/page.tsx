@@ -1,34 +1,31 @@
 "use client";
 
 import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
-import NeuralGraphVisualizer from "@/components/landing/NeuralGraphVisualizer";
 
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f7fbff_0%,#eef4ff_52%,#f7f3ea_100%)]">
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col lg:flex-row">
-      {/* Left */}
-      <div className="flex flex-1 flex-col justify-center px-6 py-16 sm:px-10 lg:px-16">
-        <div className="mb-4 inline-flex w-fit rounded-full border border-slate-300/70 bg-white/75 px-3 py-1 text-xs font-medium uppercase tracking-[0.24em] text-slate-600 shadow-sm backdrop-blur-md">
-          Connected capture
-        </div>
+    <main className="min-h-screen bg-[#fafafa] px-6 py-10 sm:px-8">
+      <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-5xl items-center justify-center">
+        <section className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-[0_1px_3px_rgba(15,23,42,0.05)]">
+          <div className="mb-10">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+              SecondBrain
+            </p>
+            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-slate-950">
+              Create an account
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              Your captures are private and belong to you.
+            </p>
+          </div>
 
-        <h1 className="mb-6 max-w-xl text-5xl font-semibold tracking-[-0.04em] text-slate-950 sm:text-6xl">
-          SecondBrain
-        </h1>
+          <GoogleSignInButton />
 
-        <p className="mb-10 max-w-xl text-lg leading-8 text-slate-600 sm:text-xl">
-          Turn your notes, audio, images, and links into connected ideas.
-        </p>
-
-        <GoogleSignInButton />
+          <p className="mt-4 text-center text-xs text-slate-400">
+            Web MVP focused on fast, private capture.
+          </p>
+        </section>
       </div>
-
-      {/* Right */}
-      <div className="flex flex-1 items-center justify-center px-6 pb-16 sm:px-10 lg:px-12 lg:pb-0">
-        <NeuralGraphVisualizer />
-      </div>
-      </div>
-    </div>
+    </main>
   );
 }
