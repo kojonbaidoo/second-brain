@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CaptureType {
+  TEXT
+  VOICE
+  DOCUMENT
+  IMAGE
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  createdAt DateTime  @default(now())
+
+  captures  Capture[]
+}
+
+model Capture {
+  id                String            @id @default(cuid())
+  userId            String
+  type              CaptureType
+  processingStatus  ProcessingStatus  @default(COMPLETED)
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  deletedAt         DateTime?
+
+  user              User              @relation(fields: [userId], references: [id])
+  content           CaptureContent?
+  file              CaptureFile?
+
+  processingJobs    ProcessingJob[]
+
+  topics            CaptureTopic[]
+  connectionsFrom   CaptureConnection[] @relation("from")
+  connectionsTo     CaptureConnection[] @relation("to")
+
+  @@index([userId, createdAt])
+  @@index([userId, deletedAt])
+}
+
+model CaptureContent {
+  id          String   @id @default(cuid())
+  captureId   String   @unique
+  text        String   @db.Text
+
+  capture     Capture  @relation(fields: [captureId], references: [id], onDelete: Cascade)
+}
+
+model CaptureFile {
+  id              String   @id @default(cuid())
+  captureId       String   @unique
+
+  fileUrl         String
+  fileType        String
+  fileSize        Int
+  durationSeconds Int?
+
+  capture         Capture  @relation(fields: [captureId], references: [id], onDelete: Cascade)
+}
+
+model ProcessingJob {
+  id          String   @id @default(cuid())
+  captureId   String
+  status      ProcessingStatus
+  attempts    Int      @default(0)
+  lastError   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  capture     Capture  @relation(fields: [captureId], references: [id], onDelete: Cascade)
+
+  @@index([captureId])
+}
+
+//
+// 🔮 FUTURE TABLES (V2)
+//
+
+model Topic {
+  id        String   @id @default(cuid())
+  name      String
+
+  createdAt DateTime @default(now())
+
+  captures  CaptureTopic[]
+}
+
+model CaptureTopic {
+  captureId String
+  topicId   String
+
+  capture   Capture @relation(fields: [captureId], references: [id], onDelete: Cascade)
+  topic     Topic   @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([captureId, topicId])
+}
+
+model CaptureConnection {
+  id              String   @id @default(cuid())
+  fromCaptureId   String
+  toCaptureId     String
+  weight          Float?
+
+  createdAt       DateTime @default(now())
+
+  from            Capture  @relation("from", fields: [fromCaptureId], references: [id], onDelete: Cascade)
+  to              Capture  @relation("to", fields: [toCaptureId], references: [id], onDelete: Cascade)
+
+  @@index([fromCaptureId])
+  @@index([toCaptureId])
+}
