@@ -1,111 +1,68 @@
-"use client";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { prisma } from "@/lib/prisma";
+import type { BrainFeedItem, BrainAttachment } from "@/components/brain/BrainItemCard";
+import BrainPageClient from "./BrainPageClient";
 
-import { useState } from "react";
-import BrainHeader from "@/components/brain/BrainHeader";
-import BrainFeed from "@/components/brain/BrainFeed";
-import type { BrainFeedItem } from "@/components/brain/BrainItemCard";
-import FloatingAddButton from "@/components/brain/FloatingAddButton";
-import UploadModal, { type UploadModalItem } from "@/components/upload/UploadModal";
-
-function formatCreatedAt(date: Date) {
+function formatCreatedAt(date: Date): string {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const diffInDays = Math.round(
     (startOfToday.getTime() - startOfDate.getTime()) / (1000 * 60 * 60 * 24),
   );
-
-  if (diffInDays <= 0) {
-    return "Today";
-  }
-
-  if (diffInDays === 1) {
-    return "Yesterday";
-  }
-
+  if (diffInDays <= 0) return "Today";
+  if (diffInDays === 1) return "Yesterday";
   return date.toLocaleDateString("en-US", { weekday: "short" });
 }
 
-function mapCaptureToFeedItem(capture: UploadModalItem): BrainFeedItem {
-  const now = new Date();
-  const primaryType =
-    capture.attachments.find((attachment) => attachment.type === "audio")?.type ??
-    capture.attachments.find((attachment) => attachment.type === "file")?.type ??
-    capture.attachments.find((attachment) => attachment.type === "image")?.type ??
-    (capture.content ? "text" : "capture");
+const ATTACHMENT_TYPE: Record<string, BrainAttachment["type"] | undefined> = {
+  VOICE: "audio",
+  DOCUMENT: "file",
+  IMAGE: "image",
+};
 
-  return {
-    id: capture.id,
-    type: primaryType,
-    content: capture.content,
-    createdAt: formatCreatedAt(now),
-    attachments: capture.attachments,
-  };
-}
+const FEED_TYPE: Record<string, BrainFeedItem["type"]> = {
+  TEXT: "text",
+  VOICE: "audio",
+  DOCUMENT: "file",
+  IMAGE: "image",
+};
 
-export default function BrainPage() {
-  const [open, setOpen] = useState(false);
-  const [items, setItems] = useState<BrainFeedItem[]>([
-    {
-      id: "1",
-      type: "text",
-      content: "Noticed my best ideas come right after a walk, not during.",
-      createdAt: "Today",
-    },
-    {
-      id: "2",
-      type: "audio",
-      content: "Voice memo - meeting with James re: product direction",
-      createdAt: "Yesterday",
-    },
-    {
-      id: "3",
-      type: "file",
-      content: "Article on zettelkasten - worth revisiting the slip-box idea",
-      createdAt: "Mon",
-    },
-    {
-      id: "4",
-      type: "image",
-      content: "Photo from whiteboard session - architecture sketch",
-      createdAt: "Sun",
-    },
-    {
-      id: "5",
-      type: "text",
-      content: "The compounding effect of small daily decisions.",
-      createdAt: "Fri",
-    },
-  ]);
+export default async function BrainPage() {
+  const session = await getServerSession(authOptions);
 
-  const handleSaveCapture = (capture: UploadModalItem) => {
-    setItems((current) => [mapCaptureToFeedItem(capture), ...current]);
-  };
+  if (!session) {
+    return new Response("Unauthorized", { status: 401 });
+  }
 
-  const handleDeleteCapture = (item: BrainFeedItem) => {
-    const confirmed = window.confirm("Delete this capture?");
+  const captures = await prisma.capture.findMany({
+    where: { userId: session.user.id, deletedAt: null },
+    include: { content: true, file: true },
+    orderBy: { createdAt: "desc" },
+  });
 
-    if (!confirmed) {
-      return;
-    }
+  const initialItems: BrainFeedItem[] = captures.map((capture: {
+    id: string;
+    type: string;
+    createdAt: Date;
+    content: { text: string } | null;
+    file: { fileUrl: string; fileType: string } | null;
+  }) => {
+    const attachmentType = ATTACHMENT_TYPE[capture.type];
+    const attachments: BrainAttachment[] =
+      capture.file && attachmentType
+        ? [{ type: attachmentType, name: capture.file.fileUrl.split("/").pop() ?? capture.file.fileType }]
+        : [];
 
-    setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
-  };
+    return {
+      id: capture.id,
+      type: FEED_TYPE[capture.type] ?? "text",
+      content: capture.content?.text ?? "",
+      createdAt: formatCreatedAt(capture.createdAt),
+      attachments,
+    };
+  });
 
-  return (
-    <div className="min-h-screen bg-[#fafafa]">
-      <BrainHeader />
-
-      <BrainFeed items={items} onDelete={handleDeleteCapture} />
-
-      <FloatingAddButton onClick={() => setOpen(true)} />
-
-      {open && (
-        <UploadModal
-          onClose={() => setOpen(false)}
-          onSave={handleSaveCapture}
-        />
-      )}
-    </div>
-  );
+  return <BrainPageClient initialItems={initialItems} userName={session.user.name} />;
 }

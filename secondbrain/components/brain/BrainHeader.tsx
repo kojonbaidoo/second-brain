@@ -1,4 +1,10 @@
-export default function BrainHeader() {
+import SignOutButton from "@/components/auth/SignOutButton";
+
+type BrainHeaderProps = {
+  userName?: string | null;
+};
+
+export default function BrainHeader({ userName }: BrainHeaderProps) {
   return (
     <header className="fixed inset-x-0 top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-sm">
       <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-6 sm:px-8">
@@ -6,20 +12,24 @@ export default function BrainHeader() {
           SecondBrain
         </h1>
 
-        <button
-          type="button"
-          aria-label="Search captures"
-          className="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
-        >
-          <svg
-            viewBox="0 0 16 16"
-            className="h-4 w-4 fill-none stroke-current"
-            strokeWidth="1.4"
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            aria-label="Search captures"
+            className="flex h-9 w-9 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
           >
-            <circle cx="7" cy="7" r="4.5" />
-            <path d="M10.5 10.5L13.5 13.5" strokeLinecap="round" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 16 16"
+              className="h-4 w-4 fill-none stroke-current"
+              strokeWidth="1.4"
+            >
+              <circle cx="7" cy="7" r="4.5" />
+              <path d="M10.5 10.5L13.5 13.5" strokeLinecap="round" />
+            </svg>
+          </button>
+
+          <SignOutButton userName={userName} />
+        </div>
       </div>
     </header>
   );
