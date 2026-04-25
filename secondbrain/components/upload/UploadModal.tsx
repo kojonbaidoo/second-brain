@@ -6,8 +6,11 @@ type UploadAttachmentType = "image" | "audio" | "file";
 
 export type UploadModalAttachment = {
   type: UploadAttachmentType;
-  file: File;
+  file?: File;
   name: string;
+  fileUrl?: string;
+  fileType?: string;
+  uploadError?: string;
 };
 
 type UploadAttachment = UploadModalAttachment & {
@@ -41,7 +44,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const uploadTimersRef = useRef<Record<string, number>>({});
+  const uploadRequestsRef = useRef<Record<string, XMLHttpRequest | null>>({});
   const attachmentsRef = useRef<UploadAttachment[]>([]);
   const discardRecordingRef = useRef(false);
 
@@ -54,7 +57,7 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
       discardRecordingRef.current = true;
       mediaRecorderRef.current?.stop();
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
-      Object.values(uploadTimersRef.current).forEach((timer) => window.clearInterval(timer));
+      Object.values(uploadRequestsRef.current).forEach((request) => request?.abort());
       attachmentsRef.current.forEach((attachment) => {
         if (attachment.previewUrl) {
           URL.revokeObjectURL(attachment.previewUrl);
@@ -77,55 +80,133 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
     };
   }, [isRecording]);
 
+  const updateAttachment = (attachmentId: string, updates: Partial<UploadAttachment>) => {
+    setAttachments((current) =>
+      current.map((attachment) =>
+        attachment.id === attachmentId ? { ...attachment, ...updates } : attachment,
+      ),
+    );
+  };
+
+  const uploadFileToSignedUrl = (
+    attachmentId: string,
+    uploadUrl: string,
+    file: File,
+  ) =>
+    new Promise<void>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", uploadUrl);
+
+      if (file.type) {
+        xhr.setRequestHeader("Content-Type", file.type);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const progress = Math.round((event.loaded / event.total) * 100);
+          updateAttachment(attachmentId, { progress, isUploading: progress < 100 });
+        }
+      };
+
+      xhr.onload = () => {
+        uploadRequestsRef.current[attachmentId] = null;
+        if (xhr.status >= 200 && xhr.status < 300) {
+          updateAttachment(attachmentId, { progress: 100, isUploading: false });
+          resolve();
+        } else {
+          const responseText = xhr.responseText ? ` Response body: ${xhr.responseText}` : "";
+          reject(
+            new Error(
+              `Upload failed with status ${xhr.status} ${xhr.statusText}.${responseText}`,
+            ),
+          );
+        }
+      };
+
+      xhr.onerror = () => {
+        uploadRequestsRef.current[attachmentId] = null;
+        const responseText = xhr.responseText ? ` Response body: ${xhr.responseText}` : "";
+        reject(
+          new Error(
+            `Upload request failed: network error, CORS, or interrupted connection. Status: ${xhr.status} ${xhr.statusText}.${responseText}`,
+          ),
+        );
+      };
+
+      xhr.onabort = () => {
+        uploadRequestsRef.current[attachmentId] = null;
+        reject(new Error("Upload aborted."));
+      };
+
+      uploadRequestsRef.current[attachmentId] = xhr;
+      xhr.send(file);
+    });
+
+  const uploadAttachment = async (attachmentId: string, type: UploadAttachmentType, file: File) => {
+    try {
+      const response = await fetch("/api/uploads/signed-url", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fileName: file.name,
+          contentType: file.type,
+          attachmentType: type,
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(
+          `Signed URL request failed: ${response.status} ${response.statusText}. ${
+            message || "No response body."
+          }`,
+        );
+      }
+
+      const { uploadUrl, fileUrl, fileType } = await response.json();
+
+      await uploadFileToSignedUrl(attachmentId, uploadUrl, file);
+
+      updateAttachment(attachmentId, {
+        fileUrl,
+        fileType,
+      });
+    } catch (uploadError) {
+      const message = uploadError instanceof Error ? uploadError.message : "Upload failed.";
+      console.error("Upload failed for attachment", {
+        attachmentId,
+        fileName: file.name,
+        attachmentType: type,
+        message,
+        error: uploadError,
+      });
+      updateAttachment(attachmentId, {
+        progress: 0,
+        isUploading: false,
+        uploadError: message,
+      });
+      setError(message);
+    }
+  };
+
   const addAttachment = (type: UploadAttachmentType, file: File) => {
     const attachmentId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const previewUrl = type === "image" ? URL.createObjectURL(file) : undefined;
 
-    setAttachments((current) => [
-      ...current,
-      {
-        id: attachmentId,
-        type,
-        file,
-        name: file.name,
-        progress: 0,
-        isUploading: true,
-        previewUrl,
-      },
-    ]);
+    const attachment: UploadAttachment = {
+      id: attachmentId,
+      type,
+      file,
+      name: file.name,
+      progress: 0,
+      isUploading: true,
+      previewUrl,
+    };
 
-    uploadTimersRef.current[attachmentId] = window.setInterval(() => {
-      setAttachments((current) => {
-        let completed = false;
-
-        const next = current.map((attachment) => {
-          if (attachment.id !== attachmentId) {
-            return attachment;
-          }
-
-          const nextProgress = Math.min(attachment.progress + 18, 100);
-          completed = nextProgress >= 100;
-
-          return {
-            ...attachment,
-            progress: nextProgress,
-            isUploading: nextProgress < 100,
-          };
-        });
-
-        if (completed) {
-          const timer = uploadTimersRef.current[attachmentId];
-
-          if (timer) {
-            window.clearInterval(timer);
-            delete uploadTimersRef.current[attachmentId];
-          }
-        }
-
-        return next;
-      });
-    }, 220);
-
+    setAttachments((current) => [...current, attachment]);
+    uploadAttachment(attachmentId, type, file);
     setError("");
   };
 
@@ -203,13 +284,18 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
     }
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (isRecording) {
       setError("Stop recording before saving.");
       return;
     }
 
-    if (attachments.some((attachment) => attachment.isUploading)) {
+    if (
+      attachments.some(
+        (attachment) =>
+          attachment.isUploading || attachment.uploadError || !attachment.fileUrl,
+      )
+    ) {
       setError("Wait for uploads to finish before saving.");
       return;
     }
@@ -220,11 +306,38 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
     }
 
     setError("");
-    onSave?.({
-      id: `capture-${Date.now()}`,
-      type: "capture",
+
+    const payload = {
       content: content.trim(),
-      attachments: attachments.map(({ type, file, name }) => ({ type, file, name })),
+      attachments: attachments.map(({ type, name, fileUrl, fileType, file }) => ({
+        type,
+        name,
+        fileUrl,
+        fileType,
+        fileSize: file?.size,
+      })),
+    };
+
+    const response = await fetch("/api/captures", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      setError(message || "Failed to save capture.");
+      return;
+    }
+
+    const createdCapture = await response.json();
+    onSave?.({
+      id: createdCapture.id,
+      type: "capture",
+      content: createdCapture.content,
+      attachments: attachments.map(({ type, name }) => ({ type, name })),
     });
     onClose();
   };
@@ -239,11 +352,11 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
   };
 
   const removeAttachment = (attachmentId: string) => {
-    const timer = uploadTimersRef.current[attachmentId];
+    const request = uploadRequestsRef.current[attachmentId];
 
-    if (timer) {
-      window.clearInterval(timer);
-      delete uploadTimersRef.current[attachmentId];
+    if (request) {
+      request.abort();
+      uploadRequestsRef.current[attachmentId] = null;
     }
 
     setAttachments((current) => {
@@ -355,8 +468,15 @@ export default function UploadModal({ onClose, onSave }: UploadModalProps) {
                   <div className="pr-10">
                     <p className="truncate text-sm font-medium text-slate-900">{attachment.name}</p>
                     <p className="mt-1 text-xs text-slate-500">
-                      {attachment.isUploading ? "Uploading..." : "Uploaded"}
+                      {attachment.uploadError
+                        ? "Upload failed"
+                        : attachment.isUploading
+                        ? "Uploading..."
+                        : "Uploaded"}
                     </p>
+                    {attachment.uploadError ? (
+                      <p className="mt-1 text-xs text-red-600">{attachment.uploadError}</p>
+                    ) : null}
                   </div>
 
                   <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-200">
